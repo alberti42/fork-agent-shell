@@ -41,6 +41,8 @@
 ;;   image path  bare image path on a line  same as `![alt](url)' (no markup)
 ;;   divider     `---' / `***' / `___'    rendered as an underlined rule line
 ;;   fenced code ```LANG\nX\n```          body syntax-highlighted via LANG mode
+;;   display math `$$X$$' / `\[X\]'        overlaid with an equation image
+;;                                         (latex+dvisvgm; LaTeX source kept beneath)
 ;;   tables      `| A | B |' grid rows    rendered with aligned columns,
 ;;                                         unicode borders, header/zebra rows
 ;;                                         and wrap-to-window-width support
@@ -68,6 +70,13 @@
 (defgroup agent-shell-markdown nil
   "Render Markdown text into propertized form."
   :group 'text)
+
+;; Display-math passes (`$$...$$' / `\[...\]') live in their own module
+;; and are invoked from `agent-shell-markdown-replace-markup' /
+;; `--set-watermark'.  Loaded here (after the defgroup so its faces /
+;; vars attach to the group); the module declares back into this file
+;; for `--in-avoid-range-p' rather than requiring it (avoids a cycle).
+(require 'agent-shell-markdown-math)
 
 (defface agent-shell-markdown-bold
   '((t :inherit bold))
@@ -209,6 +218,7 @@ For example:
 
 (cl-defun agent-shell-markdown-replace-markup (&key force
                                                     (render-images t)
+                                                    (render-math agent-shell-markdown-render-math)
                                                     (highlight-blocks t)
                                                     image-cache-directory)
   "Replace Markdown markup in current buffer with propertized text.
@@ -244,7 +254,19 @@ markup with displayed images where the URL resolves to an image
 file; nil leaves the markup as-is.  IMAGE-CACHE-DIRECTORY is where
 remote (http) image URLs are downloaded and cached; when nil
 \(the default), remote images are not fetched and their markup is
-left as text.  HIGHLIGHT-BLOCKS, when non-nil
+left as text.  RENDER-MATH (default
+`agent-shell-markdown-render-math', itself nil), when non-nil,
+overlays math with an equation image compiled via latex /
+dvisvgm: the block-level `\\[...\\]' / `$$...$$' delimiter styles
+in `agent-shell-markdown-math-delimiters' (see
+`agent-shell-markdown--style-math-blocks'), inline `\\(...\\)'
+spans (when `agent-shell-markdown-math-render-inline' is on, see
+`agent-shell-markdown--style-inline-math'), and the
+`agent-shell-markdown-math-fence-languages' fenced blocks
+\(```math / ```latex, handled in
+`agent-shell-markdown--style-source-blocks').  Nil leaves the
+LaTeX source raw and such fences as ordinary code blocks.
+HIGHLIGHT-BLOCKS, when non-nil
 (the default), runs the fenced-block body through the language's
 major-mode font-lock to colour keywords / strings / etc.; nil
 strips the fences and inserts the action label but leaves the
@@ -260,14 +282,39 @@ body un-fontified."
         (let* ((source-ranges (agent-shell-markdown--sort-ranges
                                (agent-shell-markdown--make-markers
                                 (agent-shell-markdown--source-block-ranges))))
+               ;; Display-math regions (`$$...$$' / `\\[...\\]'),
+               ;; excluding any delimiter inside a fenced code block.
+               ;; Protected like source blocks so inline passes don't
+               ;; mangle the LaTeX interior (e.g. `a_b' subscripts,
+               ;; `**' superscripts).  Skipped when RENDER-MATH is nil
+               ;; so the delimiters stay plain text.
+               (math-ranges (when render-math
+                              (agent-shell-markdown--make-markers
+                               (agent-shell-markdown--math-block-ranges
+                                source-ranges))))
                (rendered-ranges (agent-shell-markdown--make-markers
                                  (agent-shell-markdown--frozen-ranges)))
                (inline-ranges (agent-shell-markdown--make-markers
                                (agent-shell-markdown--inline-code-ranges
                                 :avoid-ranges (agent-shell-markdown--sort-ranges
-                                               source-ranges rendered-ranges))))
+                                               source-ranges math-ranges
+                                               rendered-ranges))))
+               ;; Inline math (`\\(...\\)'), detected after inline code so
+               ;; it avoids (and never nests inside) a code span — a
+               ;; backticked `\\(x\\)' stays literal.  Protected like
+               ;; display math so the inline emphasis passes don't mangle
+               ;; the LaTeX interior.  Skipped unless RENDER-MATH and
+               ;; `agent-shell-markdown-math-render-inline' are both on.
+               (inline-math-ranges
+                (when (and render-math agent-shell-markdown-math-render-inline)
+                  (agent-shell-markdown--make-markers
+                   (agent-shell-markdown--math-inline-ranges
+                    (agent-shell-markdown--sort-ranges
+                     source-ranges math-ranges inline-ranges rendered-ranges)))))
+               (protect-ranges (agent-shell-markdown--sort-ranges
+                                source-ranges math-ranges inline-math-ranges))
                (avoid-ranges (agent-shell-markdown--sort-ranges
-                              source-ranges rendered-ranges inline-ranges)))
+                              protect-ranges rendered-ranges inline-ranges)))
           (while (let ((italic-changed (agent-shell-markdown--replace-italics
                                         :avoid-ranges avoid-ranges))
                        (bold-changed (agent-shell-markdown--replace-bolds
@@ -276,7 +323,7 @@ body un-fontified."
                                         :avoid-ranges avoid-ranges)))
                    (or italic-changed bold-changed strike-changed)))
           (agent-shell-markdown--replace-headers :avoid-ranges avoid-ranges)
-          (agent-shell-markdown--style-inline-code :avoid-ranges source-ranges)
+          (agent-shell-markdown--style-inline-code :avoid-ranges protect-ranges)
           (agent-shell-markdown--replace-links :avoid-ranges avoid-ranges)
           (when render-images
             (agent-shell-markdown--replace-images
@@ -286,8 +333,28 @@ body un-fontified."
              :avoid-ranges avoid-ranges))
           (agent-shell-markdown--style-dividers :avoid-ranges avoid-ranges)
           (agent-shell-markdown--style-blockquotes :avoid-ranges avoid-ranges)
+          ;; RENDER-MATH lets the source-block pass divert a
+          ;; `math'/`latex'/`tex' fence to the equation renderer instead
+          ;; of styling it as code (those fences are how several agents
+          ;; emit display math).
           (agent-shell-markdown--style-source-blocks
-           :highlight-blocks highlight-blocks)
+           :highlight-blocks highlight-blocks
+           :render-math render-math)
+          ;; Math runs after source blocks (so a `$$' inside fenced code
+          ;; stays literal) and before tables (so a frozen equation
+          ;; isn't mis-parsed as table rows).  SOURCE-RANGES protects
+          ;; the still-open-fence case the same way the other passes do.
+          (when render-math
+            (agent-shell-markdown--style-math-blocks
+             :avoid-ranges source-ranges)
+            ;; Inline `\\(...\\)' spans, faced and overlaid in text style.
+            ;; Avoids code (source / inline) and display math so a `\\('
+            ;; inside any of them stays literal and ranges stay disjoint.
+            (when agent-shell-markdown-math-render-inline
+              (agent-shell-markdown--style-inline-math
+               :avoid-ranges (agent-shell-markdown--sort-ranges
+                              source-ranges math-ranges inline-ranges
+                              rendered-ranges))))
           ;; Tables run last so cell content has already been processed by
           ;; every other pass (bold, italic, links, inline code, etc.).
           ;; The cell parser respects face and `agent-shell-markdown-frozen'
@@ -301,7 +368,7 @@ body un-fontified."
           ;; `--set-watermark'), so `--find-tables' under the narrow
           ;; always sees the existing `agent-shell-markdown-table-source'
           ;; needed to fold new rows in.
-          (agent-shell-markdown--style-tables :avoid-ranges source-ranges)
+          (agent-shell-markdown--style-tables :avoid-ranges protect-ranges)
           ;; Mirror every `face' we composed onto `font-lock-face' so our
           ;; styling survives `font-lock-mode' re-fontification — comint
           ;; / shell-maker / agent-shell buffers fontify on every output
@@ -780,8 +847,15 @@ characters when no usable window is available (e.g. batch)."
   (or (ignore-errors (window-body-width))
       80))
 
-(cl-defun agent-shell-markdown--style-source-blocks (&key (highlight-blocks t))
+(cl-defun agent-shell-markdown--style-source-blocks (&key (highlight-blocks t)
+                                                          render-math)
   "Strip fenced code block markup and syntax-highlight the body.
+
+When RENDER-MATH is non-nil, a fence whose language is a member of
+`agent-shell-markdown-math-fence-languages' (e.g. ```math) is not
+styled as code: its fences are stripped and the body is handed to
+`agent-shell-markdown--apply-math-region', so it renders as a
+display equation instead.
 
 For each complete `\\`\\`\\`LANG' / `\\`\\`\\`' fenced block,
 the opening and closing fence lines are deleted from the buffer.
@@ -839,7 +913,9 @@ with `emacs-lisp-mode' face properties on the body and a
              (body-end (copy-marker (match-end 4)))
              (close-start (match-beginning 5))
              (close-end (match-end 5))
-             (highlighted (when highlight-blocks
+             (math (and render-math
+                        (agent-shell-markdown--math-fence-language-p lang)))
+             (highlighted (when (and highlight-blocks (not math))
                             (agent-shell-markdown--highlight-code
                              (buffer-substring-no-properties body-start body-end)
                              lang))))
@@ -847,7 +923,23 @@ with `emacs-lisp-mode' face properties on the body and a
         ;; valid; body markers adjust automatically.
         (delete-region close-start close-end)
         (delete-region open-start open-end)
-        ;; Seed the bg panel on body chars first, then layer language
+        (if math
+            ;; A `math' / `latex' / `tex' fence: render the body as a
+            ;; display equation instead of a code panel.  Fences are
+            ;; stripped (like code blocks) so the block isn't re-detected
+            ;; as a fence on later streaming calls; the LaTeX body stays
+            ;; in place as the underlying text.
+            (let ((latex (string-trim
+                          (buffer-substring-no-properties
+                           (marker-position body-start)
+                           (marker-position body-end)))))
+              (unless (string-empty-p latex)
+                (agent-shell-markdown--apply-math-region
+                 (current-buffer)
+                 (marker-position body-start) (marker-position body-end)
+                 latex))
+              (goto-char (marker-position body-end)))
+          ;; Seed the bg panel on body chars first, then layer language
         ;; font-lock faces on top — the foreground colors take priority
         ;; per glyph while the `:extend t' background fills the gaps
         ;; and reaches the right edge of the window.  Include the
@@ -975,7 +1067,7 @@ with `emacs-lisp-mode' face properties on the body and a
             ;; Move point past the body so the outer `re-search-forward'
             ;; loop doesn't backtrack into body content (e.g. shorter
             ;; inner fences inside a wider outer fence).
-            (goto-char (marker-position body-end))))))))
+            (goto-char (marker-position body-end)))))))))
 
 (defconst agent-shell-markdown--table-line-regexp
   (rx line-start
@@ -2351,6 +2443,16 @@ only to end-of-line, so they're naturally within that zone."
             (let ((last (car (last source-ranges))))
               (when (and last (= (cdr last) (point-max)))
                 (car last))))
+           ;; An open (not yet closed) `$$' must hold the frontier back
+           ;; so the closing `$$' on a future chunk gets paired —
+           ;; otherwise the watermark slips past the equation body line
+           ;; by line and it never renders.  Mirrors OPEN-FENCE-START.
+           (open-math-start
+            (let ((last (car (last (agent-shell-markdown--math-block-ranges
+                                    (agent-shell-markdown--sort-ranges
+                                     source-ranges))))))
+              (when (and last (= (cdr last) (point-max)))
+                (car last))))
            (extending-table-start
             (agent-shell-markdown--extending-table-start))
            (last-line-start
@@ -2359,6 +2461,7 @@ only to end-of-line, so they're naturally within that zone."
            (frontier (apply #'min
                             (delq nil (list last-line-start
                                             open-fence-start
+                                            open-math-start
                                             extending-table-start)))))
       (with-silent-modifications
         (put-text-property (point-min) (1+ (point-min))

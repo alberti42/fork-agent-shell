@@ -12,6 +12,10 @@
 (require 'cl-lib)
 (require 'ert)
 
+(add-to-list 'load-path
+             (expand-file-name ".." (file-name-directory
+                                     (or load-file-name buffer-file-name))))
+
 (load-file (expand-file-name "../agent-shell-markdown.el"
                              (file-name-directory
                               (or load-file-name buffer-file-name))))
