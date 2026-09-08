@@ -7807,17 +7807,19 @@ SESSION-TITLE is an optional display title for the resumed session."
                 :state (agent-shell--state) :shell-buffer shell-buffer)))
 
 (cl-defun agent-shell--list-sessions (&key state cwd buffer cursor seen-cursors
-                                           sessions (page 1)
+                                           sessions
                                            (page-limit agent-shell-session-list-page-limit)
                                            on-success on-failure)
   "Fetch all session/list pages for CWD using STATE and BUFFER.
 
-CURSOR, SEEN-CURSORS, SESSIONS, and PAGE carry pagination state between
-requests.  PAGE-LIMIT is nil to fetch all pages, or a positive integer
-limiting the number of requests.  Call ON-SUCCESS with the fetched
-sessions when the agent omits `nextCursor' or PAGE-LIMIT is reached.
-Call ON-FAILURE with the ACP error and raw message when a request fails
-or the agent repeats a cursor."
+CURSOR, SEEN-CURSORS, and SESSIONS carry pagination state between
+requests.  SEEN-CURSORS also counts the pages fetched so far: every page
+past the first is reached through exactly one cursor, so this request is
+for page (1+ (length SEEN-CURSORS)).  PAGE-LIMIT is nil to fetch all
+pages, or a positive integer limiting the number of requests.  Call
+ON-SUCCESS with the fetched sessions when the agent omits `nextCursor'
+or PAGE-LIMIT is reached.  Call ON-FAILURE with the ACP error and raw
+message when a request fails or the agent repeats a cursor."
   (agent-shell--validate-session-list-page-limit page-limit)
   (agent-shell--send-request
    :state state
@@ -7831,7 +7833,7 @@ or the agent repeats a cursor."
            (next-cursor (map-elt acp-response 'nextCursor)))
        (cond
         ((or (not next-cursor)
-             (and page-limit (>= page page-limit)))
+             (and page-limit (>= (1+ (length seen-cursors)) page-limit)))
          (funcall on-success all-sessions))
         ((seq-contains-p seen-cursors next-cursor #'equal)
          (funcall on-failure
@@ -7845,7 +7847,6 @@ or the agent repeats a cursor."
           :cursor next-cursor
           :seen-cursors (cons next-cursor seen-cursors)
           :sessions all-sessions
-          :page (1+ page)
           :page-limit page-limit
           :on-success on-success
           :on-failure on-failure)))))
