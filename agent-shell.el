@@ -5,7 +5,7 @@
 ;; Author: Alvaro Ramirez https://xenodium.com
 ;; URL: https://github.com/xenodium/agent-shell
 ;; Version: 0.75.2
-;; Package-Requires: ((emacs "29.1") (shell-maker "0.97.2") (acp "0.14.3"))
+;; Package-Requires: ((emacs "29.1") (shell-maker "0.97.2") (acp "0.15.1"))
 
 (defconst agent-shell--version "0.75.2")
 
@@ -7806,21 +7806,6 @@ SESSION-TITLE is an optional display title for the resumed session."
    :on-failure (agent-shell--make-error-handler
                 :state (agent-shell--state) :shell-buffer shell-buffer)))
 
-(cl-defun agent-shell--make-session-list-request (&key cwd cursor)
-  "Return an ACP session/list request for CWD and optional CURSOR.
-
-CURSOR is an opaque token returned as `nextCursor' by a previous
-session/list response.
-
-  (agent-shell--make-session-list-request :cwd \"/tmp\" :cursor \"next\")
-  ;; => ((:method . \"session/list\")
-  ;;     (:params (cursor . \"next\") (cwd . \"/tmp\")))"
-  (let ((request (acp-make-session-list-request :cwd cwd)))
-    (when cursor
-      (map-put! request :params
-                (map-insert (map-elt request :params) 'cursor cursor)))
-    request))
-
 (cl-defun agent-shell--list-sessions (&key state cwd buffer cursor seen-cursors
                                            sessions (page 1)
                                            (page-limit agent-shell-session-list-page-limit)
@@ -7837,7 +7822,7 @@ or the agent repeats a cursor."
   (agent-shell--send-request
    :state state
    :client (map-elt state :client)
-   :request (agent-shell--make-session-list-request :cwd cwd :cursor cursor)
+   :request (acp-make-session-list-request :cwd cwd :cursor cursor)
    :buffer buffer
    :on-success
    (lambda (acp-response)

@@ -3186,17 +3186,6 @@ so the command must not append a second time."
       (when (and test-buffer (buffer-live-p test-buffer))
         (kill-buffer test-buffer)))))
 
-(ert-deftest agent-shell--make-session-list-request-test ()
-  "Test `agent-shell--make-session-list-request' adds an optional cursor."
-  (let ((first-page (agent-shell--make-session-list-request :cwd "/tmp/"))
-        (next-page (agent-shell--make-session-list-request
-                    :cwd "/tmp/"
-                    :cursor "next-page")))
-    (should (equal (map-nested-elt first-page '(:params cwd)) "/tmp"))
-    (should-not (map-nested-elt first-page '(:params cursor)))
-    (should (equal (map-nested-elt next-page '(:params cwd)) "/tmp"))
-    (should (equal (map-nested-elt next-page '(:params cursor)) "next-page"))))
-
 (ert-deftest agent-shell--list-sessions-fetches-all-pages-test ()
   "Test `agent-shell--list-sessions' follows cursors through empty pages."
   (let ((agent-shell-session-list-page-limit nil)
