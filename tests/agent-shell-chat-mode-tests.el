@@ -116,6 +116,19 @@ Leaves out the label's rows, which share the response's tag (see
                      (not (agent-shell-chat-mode-tests--label-row-p overlay))))
               (overlays-in (point-min) (point-max))))
 
+(defun agent-shell-chat-mode-tests--column-of (text)
+  "Return the screen column TEXT starts at, or nil when it is not shown.
+Read from a real window: the column a line renders at comes from the
+`line-prefix' in force where its display row starts, which no buffer
+property can be read for on its own."
+  (save-excursion
+    (goto-char (point-min))
+    (when-let* ((found (search-forward text nil t))
+                (window (selected-window)))
+      (goto-char (- found (length text)))
+      (redisplay t)
+      (car (posn-col-row (posn-at-point (point) window))))))
+
 (defun agent-shell-chat-mode-tests--turn-labels ()
   "Return the turn labels chat mode draws, in buffer order.
 Read a position at a time, as a reader walking the buffer does, so a
@@ -660,6 +673,46 @@ overlay they were split out of is, so they are swept either way."
       (should (memq (overlay-get overlay 'agent-shell-chat--tag)
                     ;; What the version before this one sweeps.
                     '(me me-label me-surplus me-input me-draft agent))))))
+
+(ert-deftest agent-shell-chat-response-first-line-indented-test ()
+  "The response's first line carries the indent the rest of the body has.
+
+That line starts its display row inside the overlay standing in for the
+hidden marker, where the label's last row left off, so it takes its
+prefix from that overlay rather than from the body text it runs into.
+Without one it renders flush left while the response below it is
+indented."
+  (agent-shell-chat-mode-tests--with-shell
+    (agent-shell-chat-mode-tests--prompt "Claude> ")
+    (insert "typed\n")
+    (agent-shell-chat-mode-tests--marker)
+    (insert "\n")
+    ;; The response, indented as `agent-shell-ui--indent-text' indents it.
+    (insert (propertize "reply\nsecond line\n"
+                        'line-prefix "  " 'wrap-prefix "  "))
+    (agent-shell-chat--relabel)
+    (let ((agent (car (agent-shell-chat-mode-tests--agent-overlays))))
+      (should (equal "  " (overlay-get agent 'line-prefix)))
+      (should (equal "  " (overlay-get agent 'wrap-prefix))))))
+
+(ert-deftest agent-shell-chat-response-first-line-column-test ()
+  "The response's first line renders at the column the rest of it does.
+
+Needs a real window to measure, so it is skipped in batch."
+  (skip-unless (not noninteractive))
+  (agent-shell-chat-mode-tests--with-shell
+    (agent-shell-chat-mode-tests--prompt "Claude> ")
+    (insert "typed\n")
+    (agent-shell-chat-mode-tests--marker)
+    (insert "\n")
+    (insert (propertize "reply\nsecond line\n"
+                        'line-prefix "  " 'wrap-prefix "  "))
+    (agent-shell-chat--relabel)
+    (let ((window (selected-window)))
+      (set-window-buffer window (current-buffer))
+      (set-window-start window (point-min))
+      (should (= (agent-shell-chat-mode-tests--column-of "second line")
+                 (agent-shell-chat-mode-tests--column-of "reply"))))))
 
 (ert-deftest agent-shell-chat-turn-label-at-reads-drawn-rows-test ()
   "Each turn reports its label once, however the label is drawn.

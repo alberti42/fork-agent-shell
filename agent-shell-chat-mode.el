@@ -913,6 +913,19 @@ newline would merge the input line into the response for line motion
                 :anchor-beg (if split body-start mbeg) :anchor-end end
                 :props (list (cons 'before-string (if split "" before))
                              (cons 'display "")
+                             ;; The response's first line starts a row inside
+                             ;; this overlay, where the label's last row ended,
+                             ;; so the row takes its prefix from here rather
+                             ;; than from the body text it runs into: without
+                             ;; one that line renders flush left while the rest
+                             ;; of the response is indented.  Carried only
+                             ;; where the label is split out into rows; with
+                             ;; the label rendering here, its own rows would
+                             ;; take the indent along with it.
+                             (cons 'line-prefix
+                                   (and split (get-text-property end 'line-prefix)))
+                             (cons 'wrap-prefix
+                                   (and split (get-text-property end 'wrap-prefix)))
                              ;; Sharing the rows' tag, this can be reused
                              ;; from one: clear the priority a row carries,
                              ;; which the response has no call for.
