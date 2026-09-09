@@ -116,6 +116,18 @@ Leaves out the label's rows, which share the response's tag (see
                      (not (agent-shell-chat-mode-tests--label-row-p overlay))))
               (overlays-in (point-min) (point-max))))
 
+(defun agent-shell-chat-mode-tests--turn-labels ()
+  "Return the turn labels chat mode draws, in buffer order.
+Read a position at a time, as a reader walking the buffer does, so a
+label reporting itself more than once shows up as a repeat."
+  (let ((found nil)
+        (pos (point-min)))
+    (while (< pos (point-max))
+      (when-let* ((label (agent-shell-chat--turn-label-at pos)))
+        (push label found))
+      (setq pos (1+ pos)))
+    (nreverse found)))
+
 (defun agent-shell-chat-mode-tests--prompt (text)
   "Insert a shell prompt run displaying TEXT, as shell-maker fontifies it."
   (insert (propertize text 'font-lock-face
@@ -648,6 +660,27 @@ overlay they were split out of is, so they are swept either way."
       (should (memq (overlay-get overlay 'agent-shell-chat--tag)
                     ;; What the version before this one sweeps.
                     '(me me-label me-surplus me-input me-draft agent))))))
+
+(ert-deftest agent-shell-chat-turn-label-at-reads-drawn-rows-test ()
+  "Each turn reports its label once, however the label is drawn.
+
+Copied turns are headed from this (see
+`agent-shell--buffer-markdown-substring'), so a label drawn a row to
+each buffer position has to report itself, and report itself once: the
+rows padding it out are blank, and the live prompt's marker is a glyph
+to type at rather than a name."
+  (agent-shell-chat-mode-tests--with-shell
+    (setq-local agent-shell-chat-mode t)
+    (dotimes (i 2)
+      (agent-shell-chat-mode-tests--prompt "Claude> ")
+      (insert (format "question %d\n" i))
+      (agent-shell-chat-mode-tests--marker)
+      (insert (format "\nreply %d\n\n" i)))
+    (agent-shell-chat-mode-tests--prompt "Claude> ")
+    (let ((agent-shell-prompt-bar-mode nil))
+      (agent-shell-chat--relabel))
+    (should (equal '("Me" "Claude" "Me" "Claude" "Me")
+                   (agent-shell-chat-mode-tests--turn-labels)))))
 
 (ert-deftest agent-shell-chat-labels-response-with-no-room-test ()
   "A response the marker leaves no room before is labeled, not an error.

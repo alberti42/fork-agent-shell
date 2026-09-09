@@ -280,22 +280,47 @@ anything else are left out."
                        (= (overlay-start candidate) position)))
                 (overlays-in position (1+ position)))))
 
+(defun agent-shell-chat--draws-name-p (overlay property)
+  "Return non-nil when OVERLAY's PROPERTY draws a label's name.
+
+A label is layout as much as name: blank lines above and below it, and
+the rows carrying those are blank strings.  So is the string an overlay
+drawing no label carries, which is empty rather than absent.  Only the
+one row with a name in it counts, or a whole label would be read as one
+per row.
+
+For example, over a row displaying \" Claude \\n\" returns non-nil, and
+over the blank row padding it out returns nil."
+  (let ((value (overlay-get overlay property)))
+    (and (stringp value)
+         (not (string-blank-p value)))))
+
 (defun agent-shell-chat--turn-label-at (position)
   "Return the turn label chat mode draws at POSITION, or nil for none.
 
-Read from the overlay's `agent-shell-chat--tag' rather than its
-`before-string', which wraps the name in layout (blank lines, the prompt
-glyph).  An overlay drawing no label carries an empty `before-string'
-rather than none, so emptiness is what rules it out: counting it would
-label a turn twice.
+Read from the overlay's `agent-shell-chat--tag' rather than from what it
+draws, which wraps the name in layout (blank lines, the prompt glyph).
+
+A label is drawn a row to each buffer position, as a `display', or
+carried whole on a `before-string' where there are too few positions to
+go around.  Either way exactly one string has the name in it (see
+`agent-shell-chat--draws-name-p'), so a turn is labeled once.
+
+The `me' overlay is read for its `before-string' alone: its `display'
+carries the live prompt's marker, which is a glyph to type at rather
+than a label.
 
 For example, at a submitted turn returns \"Me\"."
   (when-let* ((labelled (seq-find
                          (lambda (candidate)
-                           (and (memq (overlay-get candidate 'agent-shell-chat--tag)
-                                      '(me me-label agent))
-                                (not (string-empty-p
-                                      (or (overlay-get candidate 'before-string) "")))))
+                           (when-let* ((tag (overlay-get candidate
+                                                         'agent-shell-chat--tag))
+                                       ((memq tag '(me me-label agent))))
+                             (or (agent-shell-chat--draws-name-p
+                                  candidate 'before-string)
+                                 (and (not (eq tag 'me))
+                                      (agent-shell-chat--draws-name-p
+                                       candidate 'display)))))
                          (agent-shell-chat--tagged-overlays-at position))))
     (if (eq (overlay-get labelled 'agent-shell-chat--tag) 'agent)
         (agent-shell-chat--agent-name)
