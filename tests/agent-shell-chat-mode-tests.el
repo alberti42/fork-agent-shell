@@ -649,6 +649,26 @@ overlay they were split out of is, so they are swept either way."
                     ;; What the version before this one sweeps.
                     '(me me-label me-surplus me-input me-draft agent))))))
 
+(ert-deftest agent-shell-chat-labels-response-with-no-room-test ()
+  "A response the marker leaves no room before is labeled, not an error.
+
+A restored turn writes \"input<marker>\\n\", so a label's span can come
+out empty.  An `evaporate' overlay is deleted the moment it is empty,
+which would leave relabeling holding an overlay with no buffer."
+  (agent-shell-chat-mode-tests--with-shell
+    (agent-shell-chat-mode-tests--prompt "Claude> ")
+    (insert "typed")
+    (agent-shell-chat-mode-tests--marker)
+    (insert "\nreply\n")
+    (agent-shell-chat--relabel)
+    (let ((agent (car (agent-shell-chat-mode-tests--agent-overlays))))
+      (should (overlay-buffer agent))
+      (should (string-match-p
+               "Claude" (agent-shell-chat-mode-tests--agent-label-string agent))))
+    ;; Relabeling again neither errors nor draws the label a second time.
+    (agent-shell-chat--relabel)
+    (should (= 1 (length (agent-shell-chat-mode-tests--agent-overlays))))))
+
 (ert-deftest agent-shell-chat-relabel-idempotent-test ()
   "Relabeling twice does not duplicate overlays."
   (agent-shell-chat-mode-tests--with-shell

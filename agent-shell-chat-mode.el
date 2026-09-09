@@ -189,20 +189,32 @@ that relabeling heals an overlay a differently drawn label left behind
 ANCHOR-BEG..ANCHOR-END default to the span, and are widened only where
 an overlay is expected to sit somewhere its span no longer covers.
 
-With REAR-ADVANCE non-nil the overlay takes in text inserted at its end
-and is not `evaporate'd while empty, so it can hold properties over an
-input still being typed: relabeling is event-driven, so an overlay that
-stopped at the caret would never grow to cover what follows it."
+With REAR-ADVANCE non-nil the overlay takes in text inserted at its end,
+so it can hold properties over an input still being typed: relabeling is
+event-driven, so an overlay that stopped at the caret would never grow
+to cover what follows it."
   (let ((overlay (or (seq-find (lambda (overlay)
                                  (eq (overlay-get overlay 'agent-shell-chat--tag) tag))
                                (overlays-in anchor-beg (max anchor-end (1+ anchor-beg))))
                      (let ((created (make-overlay beg end nil nil rear-advance)))
                        (overlay-put created 'agent-shell-chat--tag tag)
-                       (unless rear-advance
-                         (overlay-put created 'evaporate t))
-                       created))))
+                       created)))
+        ;; `evaporate' is carried only while the span has text to
+        ;; evaporate with.  BEG..END can be empty (a restored turn leaves
+        ;; the marker with no room between it and the response it labels),
+        ;; and an empty overlay is deleted the moment `evaporate' lands on
+        ;; it, taking the label with it and leaving this holding an
+        ;; overlay with no buffer at all.  Dropped before a move that
+        ;; empties the span, taken back up after one that fills it, for
+        ;; the same reason.  A rear-advancing overlay never carries it: it
+        ;; starts out empty, waiting on input still being typed.
+        (evaporates (and (not rear-advance) (< beg end))))
+    (when (and (not evaporates) (overlay-get overlay 'evaporate))
+      (overlay-put overlay 'evaporate nil))
     (unless (and (= (overlay-start overlay) beg) (= (overlay-end overlay) end))
       (move-overlay overlay beg end))
+    (when (and evaporates (not (overlay-get overlay 'evaporate)))
+      (overlay-put overlay 'evaporate t))
     (map-do (lambda (property value)
               (unless (equal (overlay-get overlay property) value)
                 (overlay-put overlay property value)))
