@@ -368,6 +368,23 @@ past it, and over the same text unpropertized returns nil."
       (setq found (get-text-property (match-beginning 0) 'shell-maker--marker)))
     found))
 
+(defun agent-shell-chat--label-rows (label)
+  "Split LABEL into display rows, one string per row.
+
+Each row is meant for a buffer position of its own.  A multi-row string
+stacks every row on the single position it hangs from, and `window-start'
+can only ever be a buffer position, so scrolling by fewer rows than the
+string spans has nowhere to land and stops advancing (on graphical
+frames; terminals advance through it fine).
+
+For example, over \"\\n Me \\n\" returns (\"\\n\" \" Me \\n\"), and over a
+label with no newline returns it unchanged as a single row."
+  (let ((pieces (split-string label "\n")))
+    (append (mapcar (lambda (piece) (concat piece "\n")) (butlast pieces))
+            (let ((tail (car (last pieces))))
+              (unless (string-empty-p tail)
+                (list tail))))))
+
 (defun agent-shell-chat--gc-overlays (tags kept)
   "Delete label overlays of TAGS not in KEPT (a list of overlays).
 Removes stale labels whose prompt run or marker was deleted (e.g. a live
@@ -556,7 +573,24 @@ above, putting the first line of a multi-line input out of reach of
                              (label-nl (concat lead me-label
                                                (propertize "\n" 'face
                                                            'default)))
-                             (t (concat lead me-label pad)))))
+                             (t (concat lead me-label pad))))
+               ;; One row per covered prompt position, where the prompt is
+               ;; long enough to hold them; the overlay covering the prompt
+               ;; then starts past the rows rather than under them.
+               ;;
+               ;; Laid past the newline above rather than before it, which
+               ;; shifts the padding by one row in each direction: that
+               ;; newline now closes the row `lead' opened with its first, and
+               ;; the label needs a blank line of its own after it (the second
+               ;; half of `pad') where it used to borrow that newline's.  What
+               ;; `lead' accounts for beyond that first newline still holds.
+               (label-rows (and label-nl
+                                (agent-shell-chat--label-rows
+                                 (concat (string-remove-prefix "\n" lead)
+                                         me-label pad))))
+               ;; Whether the covered prompt has a position for every row.
+               (split (<= (length label-rows) (- run-end pos)))
+               (label-start (if split (+ pos (length label-rows)) pos)))
           ;; Collapse whatever blank lines precede the one the label rides.
           (when (and label-nl (> label-nl start))
             (push
@@ -566,19 +600,39 @@ above, putting the first line of a multi-line input out of reach of
                            (cons 'line-prefix "")
                            (cons 'wrap-prefix "")))
              kept))
-          ;; Carry the label on the newline above, left visible so it keeps
-          ;; closing its line.
+          ;; Lay the label's rows over the head of the covered prompt, one row
+          ;; per buffer position, so every row is somewhere `window-start' can
+          ;; land (see `agent-shell-chat--label-rows').  The prompt is hidden
+          ;; either way, so the rows cost nothing that was being shown.  Falls
+          ;; back to carrying the whole label on the newline above when the
+          ;; prompt is too short to hold a row apiece.
           (when label-nl
-            (push
-             (agent-shell-chat--ensure-overlay
-              :tag 'me-label :beg label-nl :end pos
-              :props (list (cons 'before-string before)
-                           (cons 'line-prefix "")
-                           (cons 'wrap-prefix "")))
-             kept))
+            (if split
+                (seq-do-indexed
+                 (lambda (row offset)
+                   (push
+                    (agent-shell-chat--ensure-overlay
+                     :tag 'me-label
+                     :beg (+ pos offset) :end (+ pos offset 1)
+                     ;; Above the overlay covering the prompt, whose
+                     ;; `line-prefix' would otherwise indent the label with
+                     ;; the input it belongs beside.
+                     :props (list (cons 'display row)
+                                  (cons 'priority 100)
+                                  (cons 'line-prefix "")
+                                  (cons 'wrap-prefix "")))
+                    kept))
+                 label-rows)
+              (push
+               (agent-shell-chat--ensure-overlay
+                :tag 'me-label :beg label-nl :end pos
+                :props (list (cons 'before-string before)
+                             (cons 'line-prefix "")
+                             (cons 'wrap-prefix "")))
+               kept)))
           (push
            (agent-shell-chat--ensure-overlay
-            :tag 'me :beg (if label-nl pos start) :end end
+            :tag 'me :beg (if label-nl label-start start) :end end
             ;; Anchor on the prompt run, which the span may start before: the
             ;; span's start flips with `label-nl', and reuse has to survive
             ;; that flip rather than strand the overlay it should have moved.
@@ -749,13 +803,32 @@ newline would merge the input line into the response for line motion
           ;; it (keeping the terminator visible), and the span alone would
           ;; miss the overlay it should have reused.
           (unless response-empty
-            (push
-             (agent-shell-chat--ensure-overlay
-              :tag 'agent :beg start :end end
-              :anchor-beg mbeg :anchor-end end
-              :props (list (cons 'before-string before) (cons 'display "")))
-             kept))))
-      (agent-shell-chat--gc-overlays '(agent) kept)
+            (let* ((rows (agent-shell-chat--label-rows before))
+                   ;; As for the prompt label: a row to each buffer position,
+                   ;; so every one is somewhere `window-start' can land.  The
+                   ;; span opens on the marker, which is hidden either way and
+                   ;; long enough to carry them.
+                   (split (<= (length rows) (- end start)))
+                   (body-start (if split (+ start (length rows)) start)))
+              (when split
+                (seq-do-indexed
+                 (lambda (row offset)
+                   (push
+                    (agent-shell-chat--ensure-overlay
+                     :tag 'agent-label
+                     :beg (+ start offset) :end (+ start offset 1)
+                     :props (list (cons 'display row)
+                                  (cons 'priority 100)))
+                    kept))
+                 rows))
+              (push
+               (agent-shell-chat--ensure-overlay
+                :tag 'agent :beg body-start :end end
+                :anchor-beg (if split body-start mbeg) :anchor-end end
+                :props (list (cons 'before-string (if split "" before))
+                             (cons 'display "")))
+               kept)))))
+      (agent-shell-chat--gc-overlays '(agent agent-label) kept)
       ;; TODO: Remove after 2026-09-28 (see `agent-shell-chat--label-prompts').
       (dolist (overlay (overlays-in (point-min) (point-max)))
         (when (eq (overlay-get overlay 'category) 'agent-shell-chat-agent)
@@ -865,7 +938,7 @@ too."
     (agent-shell-unsubscribe :subscription agent-shell-chat--subscription))
   (when (timerp agent-shell-chat--relabel-timer)
     (cancel-timer agent-shell-chat--relabel-timer))
-  (dolist (tag '(me me-label me-surplus me-input me-draft agent))
+  (dolist (tag '(me me-label me-surplus me-input me-draft agent agent-label))
     (remove-overlays (point-min) (point-max) 'agent-shell-chat--tag tag))
   ;; Labels from before chat overlays stopped using `category'.
   ;; TODO: Remove after 2026-09-28 (see `agent-shell-chat--label-prompts').

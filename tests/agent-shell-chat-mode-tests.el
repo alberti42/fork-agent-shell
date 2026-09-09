@@ -24,16 +24,31 @@
 
 (defun agent-shell-chat-mode-tests--label-string (me)
   "Return the label rendered for ME, a `Me' overlay.
-The label rides the newline above the prompt, on its own overlay, so that
-nothing is shown at the prompt itself.  Falls back to ME when the run has
-no newline above to carry it."
-  (or (seq-some (lambda (overlay)
-                  (and (eq (overlay-get overlay 'agent-shell-chat--tag) 'me-label)
-                       (= (overlay-end overlay) (overlay-start me))
-                       (overlay-get overlay 'before-string)))
-                (overlays-in (max (point-min) (1- (overlay-start me)))
-                             (1+ (overlay-start me))))
-      (overlay-get me 'before-string)))
+
+The label's rows are laid over the head of the covered prompt, a row to
+each buffer position, so every one is somewhere `window-start' can land.
+Joins them back into the single string they render as, so callers assert
+what is shown rather than how it is stored.
+
+Falls back to the label carried whole on the newline above, and then to
+ME itself where the run has no newline above to carry it."
+  (let ((rows (sort (seq-filter
+                     (lambda (overlay)
+                       (eq (overlay-get overlay 'agent-shell-chat--tag) 'me-label))
+                     (overlays-in (save-excursion (goto-char (overlay-start me))
+                                                  (line-beginning-position))
+                                  (overlay-start me)))
+                    (lambda (a b) (< (overlay-start a) (overlay-start b))))))
+    (cond (rows (mapconcat (lambda (overlay)
+                             (or (overlay-get overlay 'display) ""))
+                           rows ""))
+          ((seq-some (lambda (overlay)
+                       (and (eq (overlay-get overlay 'agent-shell-chat--tag) 'me-label)
+                            (= (overlay-end overlay) (overlay-start me))
+                            (overlay-get overlay 'before-string)))
+                     (overlays-in (max (point-min) (1- (overlay-start me)))
+                                  (1+ (overlay-start me)))))
+          (t (overlay-get me 'before-string)))))
 
 (defun agent-shell-chat-mode-tests--marker-string (me)
   "Return the string carrying ME\\='s prompt marker.
@@ -58,6 +73,26 @@ there."
   (seq-find (lambda (overlay)
               (eq (overlay-get overlay 'agent-shell-chat--tag) 'me-draft))
             (overlays-in (point-min) (point-max))))
+
+(defun agent-shell-chat-mode-tests--agent-label-string (agent)
+  "Return the label rendered for AGENT, a response overlay.
+
+The label's rows are laid over the head of the span the overlay covers
+the rest of, a row to each buffer position, so every one is somewhere
+`window-start' can land.  Joins them back into the string they render as.
+
+Falls back to AGENT's own `before-string' where the label is carried
+whole there instead."
+  (let ((rows (sort (seq-filter
+                     (lambda (overlay)
+                       (eq (overlay-get overlay 'agent-shell-chat--tag) 'agent-label))
+                     (overlays-in (save-excursion (goto-char (overlay-start agent))
+                                                  (line-beginning-position))
+                                  (overlay-start agent)))
+                    (lambda (a b) (< (overlay-start a) (overlay-start b))))))
+    (if rows
+        (mapconcat (lambda (overlay) (or (overlay-get overlay 'display) "")) rows "")
+      (overlay-get agent 'before-string))))
 
 (defun agent-shell-chat-mode-tests--agent-overlays ()
   "Return the agent label overlays in the current buffer."
@@ -185,7 +220,8 @@ without an `agent-shell-chat--tag' are left alone."
       (should (= 1 (length me)))
       (should (string-match-p "Me" (overlay-get (car me) 'before-string)))
       (should (= 1 (length agent)))
-      (should (string-match-p "Claude" (overlay-get (car agent) 'before-string))))))
+      (should (string-match-p
+               "Claude" (agent-shell-chat-mode-tests--agent-label-string (car agent)))))))
 
 (ert-deftest agent-shell-chat-live-prompt-hidden-with-bar-test ()
   "The empty live prompt shows `Me', or is hidden when the bar is on."
@@ -360,9 +396,12 @@ own rather than assume the hidden one separates it."
     (agent-shell-chat--relabel)
     (let ((before (agent-shell-chat-mode-tests--label-string
                    (car (agent-shell-chat-mode-tests--me-overlays)))))
-      ;; Two newlines: one ends the content line the hidden one could not,
-      ;; the second is the blank line separating the label.
-      (should (string-prefix-p "\n\n" before)))))
+      ;; One newline ends the content line the hidden one could not.  The
+      ;; blank line separating the label is the newline the rows are laid
+      ;; past, so the label closes with a blank line of its own instead.
+      (should (string-prefix-p "\n Me " before))
+      (should-not (string-prefix-p "\n\n" before))
+      (should (string-suffix-p "\n\n" before)))))
 
 (ert-deftest agent-shell-chat-visible-terminator-single-lead-test ()
   "A `Me' label adds one newline when the content's newline is visible.
@@ -385,9 +424,9 @@ would render two blank lines instead of one."
 
 A string there holds point and the cursor on the row above, so moving up
 into an input spanning several lines lands above the input rather than on
-its first line.  The label rides the newline above instead, and the marker
-travels as a `line-prefix'; neither occupies a buffer position, leaving
-the input reachable."
+its first line.  The label is drawn over the covered prompt instead, and
+the marker with it; a `display' stands on buffer positions rather than
+adding any, leaving the input reachable."
   (agent-shell-chat-mode-tests--with-shell
     (agent-shell-chat-mode-tests--prompt "Claude> ")
     (insert "hello\n")
@@ -400,9 +439,12 @@ the input reachable."
     (let ((me (car (last (agent-shell-chat-mode-tests--me-overlays)))))
       (should (equal "" (overlay-get me 'before-string)))
       (should (string-match-p "❯" (agent-shell-chat-mode-tests--marker-string me)))
-      ;; The label rides the newline that closes the line above the prompt.
+      ;; The label is drawn on the prompt this overlay covers the rest of,
+      ;; a row to each position, so it starts past those rows.
       (should (string-match-p "Me" (agent-shell-chat-mode-tests--label-string me)))
-      (should (eq ?\n (char-before (overlay-start me)))))))
+      (should (< (save-excursion (goto-char (overlay-start me))
+                                 (line-beginning-position))
+                 (overlay-start me))))))
 
 (ert-deftest agent-shell-chat-live-prompt-marker-not-line-prefix-test ()
   "The live prompt's marker is a `display', never a `line-prefix'.
@@ -598,8 +640,9 @@ so it does not vanish mid-type when a relabel runs."
   "A submitted turn's first input line lines up with the rest of it.
 
 That line is shared with the prompt, which is covered, so its indent has
-to come from the prompt's own overlay: `line-prefix' is read at the start
-of a line, and that is where the covered prompt sits."
+to come from the prompt's own overlay.  `line-prefix' is read where a
+display row starts, and the label's rows take the head of the covered
+prompt, so the input's row starts where that overlay does."
   (agent-shell-chat-mode-tests--with-shell
     ;; A turn above, so the label rides the newline it leaves and this line
     ;; carries the input alone.
@@ -614,8 +657,8 @@ of a line, and that is where the covered prompt sits."
       (insert "reply\n")
       (agent-shell-chat--relabel)
       (let ((first-line (get-char-property
-                         (save-excursion (goto-char input)
-                                         (line-beginning-position))
+                         (overlay-start
+                          (car (last (agent-shell-chat-mode-tests--me-overlays))))
                          'line-prefix))
             (second-line (get-char-property
                           (save-excursion (goto-char input)
@@ -751,6 +794,39 @@ renders a second agent label partway through the one response."
     (agent-shell-chat--relabel)
     (should (= 1 (length (agent-shell-chat-mode-tests--agent-overlays))))))
 
+(ert-deftest agent-shell-chat-labels-scroll-one-line-at-a-time-test ()
+  "Scrolling a line at a time advances past every label.
+
+A label drawn as one multi-row string hangs all its rows off the single
+buffer position it is attached to.  `window-start' can only ever be a
+buffer position, so a scroll of fewer rows than the string spans has
+nowhere to land and stops advancing for good.  Drawing a row to each
+position keeps every one reachable.
+
+Needs a real window to scroll, so it is skipped in batch."
+  (skip-unless (not noninteractive))
+  (agent-shell-chat-mode-tests--with-shell
+    (dotimes (i 40)
+      (agent-shell-chat-mode-tests--prompt "Claude> ")
+      (insert (format "question %d\n" i))
+      (agent-shell-chat-mode-tests--marker)
+      (insert (format "\nreply %d\n\n" i)))
+    (agent-shell-chat--relabel)
+    (let ((window (selected-window)))
+      (set-window-buffer window (current-buffer))
+      (goto-char (point-min))
+      (set-window-start window (point-min))
+      (redisplay t)
+      (let ((last -1) (stalled nil) (n 0))
+        (while (and (< n 400) (not stalled)
+                    (not (pos-visible-in-window-p (point-max) window)))
+          (ignore-errors (scroll-up-command 1))
+          (redisplay t)
+          (when (= (window-start window) last)
+            (setq stalled (line-number-at-pos (window-start window))))
+          (setq last (window-start window) n (1+ n)))
+        (should-not stalled)))))
+
 (ert-deftest agent-shell-chat-empty-submission-hidden-test ()
   "An empty submission (a prompt with another below it) is not labeled.
 Only the live prompt shows an empty `Me', and neither claims input."
@@ -868,9 +944,11 @@ agent label whose pad would separate the next label."
       (agent-shell-chat--relabel))
     (let ((before (agent-shell-chat-mode-tests--label-string
                    (car (last (agent-shell-chat-mode-tests--me-overlays))))))
-      ;; Ends the interrupted line, then leaves one blank line.
-      (should (string-prefix-p "\n\n Me " (substring-no-properties before)))
-      (should-not (string-prefix-p "\n\n\n" (substring-no-properties before))))))
+      ;; Ends the interrupted line.  The blank line above is the newline
+      ;; the rows are laid past, so the label closes with one of its own.
+      (should (string-prefix-p "\n Me " (substring-no-properties before)))
+      (should-not (string-prefix-p "\n\n" (substring-no-properties before)))
+      (should (string-suffix-p "\n\n" (substring-no-properties before))))))
 
 (ert-deftest agent-shell-chat-label-after-own-line-marker-test ()
   "A label after a marker that starts its line keeps one blank line before it.
@@ -887,8 +965,11 @@ leaves exactly one blank line (a full pad would leave two)."
     (let ((before (substring-no-properties
                    (agent-shell-chat-mode-tests--label-string
                     (car (last (agent-shell-chat-mode-tests--me-overlays)))))))
-      (should (string-prefix-p "\n Me " before))
-      (should-not (string-prefix-p "\n\n" before)))))
+      ;; The marker's line is already empty and the rows are laid past the
+      ;; newline closing it, so the label opens straight onto its own row.
+      (should (string-prefix-p " Me " before))
+      (should-not (string-prefix-p "\n" before))
+      (should (string-suffix-p "\n\n" before)))))
 
 (ert-deftest agent-shell-chat-marker-starts-line-p-test ()
   "The marker is recognized as starting its line only when a newline precedes it."
@@ -926,10 +1007,12 @@ used, which holds however many empty submissions stack up."
       ;; Both empty submissions stay hidden.
       (should (equal "" (funcall before (nth 1 overlays))))
       (should (equal "" (funcall before (nth 2 overlays))))
-      ;; The live label still keeps exactly one blank line above it.
+      ;; The live label still keeps exactly one blank line above it, which
+      ;; is the newline its rows are laid past; it closes with one of its own.
       (let ((live (funcall before (nth 3 overlays))))
-        (should (string-prefix-p "\n Me " live))
-        (should-not (string-prefix-p "\n\n" live))))))
+        (should (string-prefix-p " Me " live))
+        (should-not (string-prefix-p "\n" live))
+        (should (string-suffix-p "\n\n" live))))))
 
 (provide 'agent-shell-chat-mode-tests)
 ;;; agent-shell-chat-mode-tests.el ends here
