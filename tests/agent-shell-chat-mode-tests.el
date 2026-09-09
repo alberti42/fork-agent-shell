@@ -765,6 +765,33 @@ were still the draft, until the next relabel dropped the overlay."
       ;; No stray indent left standing at the marker either.
       (should (equal "" (overlay-get draft 'after-string))))))
 
+(ert-deftest agent-shell-chat-draft-reindent-survives-narrowing-test ()
+  "The draft re-indents itself under a caller's narrowing.
+Its hooks fire during whatever edit provoked them, and a caller rendering
+the response above the prompt narrows to end before it (see
+`agent-shell--update-fragment') while the draft rear-advances toward end
+of buffer.  Reading the draft's bounds under that restriction signals
+`args-out-of-range' unless they are widened back first."
+  (agent-shell-chat-mode-tests--with-shell
+    (agent-shell-chat-mode-tests--prompt "Claude> ")
+    (let ((agent-shell-prompt-bar-mode nil))
+      (agent-shell-chat--relabel))
+    (goto-char (point-max))
+    (insert "typed\n")
+    (let ((draft (agent-shell-chat-mode-tests--draft-overlay)))
+      (should draft)
+      (save-restriction
+        ;; Narrowed to end where the draft begins, leaving the draft's own
+        ;; end outside it, as a caller rendering above the prompt does.
+        (narrow-to-region (point-min) (overlay-start draft))
+        (goto-char (point-max))
+        (insert "streamed"))
+      ;; Still covering everything typed, and still indenting the empty
+      ;; last line the newline left.
+      (should (= (overlay-end draft) (point-max)))
+      (should (equal agent-shell-chat--body-indent
+                     (overlay-get draft 'after-string))))))
+
 (ert-deftest agent-shell-chat-quoted-marker-keeps-prompt-live-test ()
   "Text matching the end-of-prompt marker does not end the live prompt.
 The marker is recognised by the `shell-maker--marker' property shell-maker

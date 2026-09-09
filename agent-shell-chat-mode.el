@@ -327,27 +327,42 @@ change is in.  Kept off the relabel path: relabeling is event-driven and
 coalesced, so none runs between the newline that empties the last line
 and the character that fills it.
 
-Stops DRAFT at the end-of-prompt marker once the turn is submitted.  The
-marker and the response that follows it both arrive at end of buffer,
-which a rear-advancing overlay takes in, indenting the response as though
-it were still being typed until the next relabel drops the overlay.
+Widens before reading DRAFT's bounds: the hooks fire during whatever
+edit provoked them, and a caller rendering above the prompt narrows to
+end before it (see `agent-shell--update-fragment'), while DRAFT
+rear-advances toward end of buffer.  Its bounds then lie outside that
+restriction, which `text-property-any' rejects outright."
+  (when after
+    (save-restriction
+      (widen)
+      (agent-shell-chat--draft-reindent draft))))
+
+(defun agent-shell-chat--draft-reindent (draft)
+  "Set DRAFT's trailing indent, stopping it at a submitted turn's marker.
+
+The marker and the response that follows it both arrive at end of
+buffer, which a rear-advancing overlay takes in, indenting the response
+as though it were still being typed until the next relabel drops the
+overlay.
+
+Split out of `agent-shell-chat--draft-changed' so the widening it needs
+wraps every buffer position this reads.
 
 For example, over a DRAFT covering \"one\\n\" sets its `after-string' to
 the body indent, and over \"one\" sets it to \"\".  Once a submission has
 made that \"one\\n<marker>\", DRAFT is left ending before the marker, with
 an `after-string' of \"\"."
-  (when after
-    (let* ((submitted (text-property-any (overlay-start draft)
-                                         (overlay-end draft)
-                                         'shell-maker--marker t))
-           (indent (if submitted
-                       ""
-                     (agent-shell-chat--draft-tail-indent
-                      (overlay-start draft) (overlay-end draft)))))
-      (when submitted
-        (move-overlay draft (overlay-start draft) submitted))
-      (unless (equal (overlay-get draft 'after-string) indent)
-        (overlay-put draft 'after-string indent)))))
+  (let* ((submitted (text-property-any (overlay-start draft)
+                                       (overlay-end draft)
+                                       'shell-maker--marker t))
+         (indent (if submitted
+                     ""
+                   (agent-shell-chat--draft-tail-indent
+                    (overlay-start draft) (overlay-end draft)))))
+    (when submitted
+      (move-overlay draft (overlay-start draft) submitted))
+    (unless (equal (overlay-get draft 'after-string) indent)
+      (overlay-put draft 'after-string indent))))
 
 (defun agent-shell-chat--search-marker-forward ()
   "Search forward for shell-maker's end-of-prompt marker.
