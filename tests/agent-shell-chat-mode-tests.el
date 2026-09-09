@@ -74,6 +74,13 @@ there."
               (eq (overlay-get overlay 'agent-shell-chat--tag) 'me-draft))
             (overlays-in (point-min) (point-max))))
 
+(defun agent-shell-chat-mode-tests--label-row-p (overlay)
+  "Return non-nil when OVERLAY draws a row of a label.
+A label is drawn a row to each buffer position, as a `display'.  An
+overlay standing in for hidden text (a prompt run, the end-of-prompt
+marker) displays \"\" instead, and draws nothing."
+  (not (string-empty-p (or (overlay-get overlay 'display) ""))))
+
 (defun agent-shell-chat-mode-tests--agent-label-string (agent)
   "Return the label rendered for AGENT, a response overlay.
 
@@ -81,11 +88,17 @@ The label's rows are laid over the head of the span the overlay covers
 the rest of, a row to each buffer position, so every one is somewhere
 `window-start' can land.  Joins them back into the string they render as.
 
+Rows carry the response's own tag (so a version drawing the label whole
+sweeps them too), and are picked out by the label they draw: a
+response's `display' only ever stands in for the hidden marker, and is
+empty.
+
 Falls back to AGENT's own `before-string' where the label is carried
 whole there instead."
   (let ((rows (sort (seq-filter
                      (lambda (overlay)
-                       (eq (overlay-get overlay 'agent-shell-chat--tag) 'agent-label))
+                       (and (eq (overlay-get overlay 'agent-shell-chat--tag) 'agent)
+                            (agent-shell-chat-mode-tests--label-row-p overlay)))
                      (overlays-in (save-excursion (goto-char (overlay-start agent))
                                                   (line-beginning-position))
                                   (overlay-start agent)))
@@ -95,9 +108,12 @@ whole there instead."
       (overlay-get agent 'before-string))))
 
 (defun agent-shell-chat-mode-tests--agent-overlays ()
-  "Return the agent label overlays in the current buffer."
+  "Return the response overlays in the current buffer.
+Leaves out the label's rows, which share the response's tag (see
+`agent-shell-chat-mode-tests--agent-label-string')."
   (seq-filter (lambda (overlay)
-                (eq (overlay-get overlay 'agent-shell-chat--tag) 'agent))
+                (and (eq (overlay-get overlay 'agent-shell-chat--tag) 'agent)
+                     (not (agent-shell-chat-mode-tests--label-row-p overlay))))
               (overlays-in (point-min) (point-max))))
 
 (defun agent-shell-chat-mode-tests--prompt (text)
@@ -578,6 +594,60 @@ alone they render their label a second time."
     (agent-shell-chat--relabel)
     (should-not (seq-find (lambda (overlay) (overlay-get overlay 'category))
                           (overlays-in (point-min) (point-max))))))
+
+(ert-deftest agent-shell-chat-heals-label-drawn-whole-test ()
+  "A label an earlier version drew whole is cleared, not drawn beside.
+
+Labels used to be drawn as one multi-row `before-string' and are now
+drawn a row to each buffer position, as a `display'.  Overlays are
+reused by tag and keep every property a relabel does not write, so the
+string a rolled-forward (or rolled-back) shell carries would otherwise
+go on rendering next to the rows laid over it."
+  (agent-shell-chat-mode-tests--with-shell
+    (agent-shell-chat-mode-tests--prompt "Claude> ")
+    (insert "typed\n")
+    (agent-shell-chat-mode-tests--marker)
+    (insert "reply\n\n")
+    (agent-shell-chat-mode-tests--prompt "Claude> ")
+    (agent-shell-chat--relabel)
+    ;; Stand in for the shape the earlier version left behind: the label
+    ;; carried whole on a `before-string', with no `display' row.
+    (dolist (overlay (overlays-in (point-min) (point-max)))
+      (when (memq (overlay-get overlay 'agent-shell-chat--tag) '(me-label agent))
+        (overlay-put overlay 'display nil)
+        (overlay-put overlay 'before-string "\n STALE \n\n")))
+    (agent-shell-chat--relabel)
+    (should-not (seq-find (lambda (overlay)
+                            (string-match-p
+                             "STALE" (or (overlay-get overlay 'before-string) "")))
+                          (overlays-in (point-min) (point-max))))
+    ;; Each label is back to being drawn once, as rows.
+    (should (string-match-p "Me" (agent-shell-chat-mode-tests--label-string
+                                  (car (agent-shell-chat-mode-tests--me-overlays)))))
+    (should (string-match-p "Claude" (agent-shell-chat-mode-tests--agent-label-string
+                                      (car (agent-shell-chat-mode-tests--agent-overlays)))))))
+
+(ert-deftest agent-shell-chat-labels-tagged-for-earlier-sweeps-test ()
+  "Every label overlay carries a tag the version before this one sweeps.
+
+Rolling the package back leaves that version relabeling: it reuses one
+overlay per span and sweeps the rest by tag.  A tag it never heard of
+survives its sweep, its relabel and even turning the mode off, drawing
+the label a second time for good.  The label rows are tagged as the
+overlay they were split out of is, so they are swept either way."
+  (agent-shell-chat-mode-tests--with-shell
+    ;; A buffer holding a label overlay of every tag.
+    (agent-shell-chat-mode-tests--prompt "Claude> ")
+    (insert "typed\n")
+    (agent-shell-chat-mode-tests--marker)
+    (insert "reply\n\n\n\n")
+    (agent-shell-chat-mode-tests--prompt "Claude> ")
+    (insert "draft\n")
+    (agent-shell-chat--relabel)
+    (dolist (overlay (overlays-in (point-min) (point-max)))
+      (should (memq (overlay-get overlay 'agent-shell-chat--tag)
+                    ;; What the version before this one sweeps.
+                    '(me me-label me-surplus me-input me-draft agent))))))
 
 (ert-deftest agent-shell-chat-relabel-idempotent-test ()
   "Relabeling twice does not duplicate overlays."
