@@ -5,7 +5,7 @@
 ;; Author: Alvaro Ramirez https://xenodium.com
 ;; URL: https://github.com/xenodium/agent-shell
 ;; Version: 0.75.2
-;; Package-Requires: ((emacs "29.1") (shell-maker "0.97.2") (acp "0.15.1"))
+;; Package-Requires: ((emacs "29.1") (shell-maker "0.97.3") (acp "0.15.1"))
 
 (defconst agent-shell--version "0.75.2")
 
