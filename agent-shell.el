@@ -1969,13 +1969,29 @@ associated viewport buffer exists, switch to that instead."
   (interactive)
   (message "agent-shell v%s" agent-shell--version))
 
+(cl-defun agent-shell-session-id (&key shell-buffer)
+  "Return the ACP session ID, or nil when no session is active.
+
+When SHELL-BUFFER is non-nil, read that buffer instead of the current one.
+
+A stable public API for packages that integrate with `agent-shell'
+programmatically.  Resolve a shell buffer from a viewport (or the
+surrounding project) with `agent-shell-shell-buffer'.
+
+Example:
+  (agent-shell-session-id)
+  (agent-shell-session-id
+   :shell-buffer (agent-shell-shell-buffer :no-error t :no-create t))"
+  (with-current-buffer (or shell-buffer (current-buffer))
+    (map-nested-elt agent-shell--state '(:session :id))))
+
 (defun agent-shell-copy-session-id ()
   "Copy the current session ID to the kill ring."
   (declare (modes agent-shell-mode))
   (interactive)
   (unless (derived-mode-p 'agent-shell-mode)
     (user-error "Not in a shell"))
-  (if-let* ((session-id (map-nested-elt (agent-shell--state) '(:session :id))))
+  (if-let* ((session-id (agent-shell-session-id)))
       (progn
         (kill-new session-id)
         (message "Copied session ID: %s" session-id))
